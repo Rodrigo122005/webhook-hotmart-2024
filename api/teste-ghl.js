@@ -1,14 +1,14 @@
 export default async function handler(req, res) {
   try {
-    const axios = require('axios');
-    
     console.log('🧪 Testando conexão com GoHighLevel...');
+    console.log('API Key exists:', !!process.env.GHL_API_KEY);
+    console.log('Location ID:', process.env.GHL_LOCATION_ID);
     
-    // Dados do contato
+    // Dados para teste
     const dadosContato = {
       locationId: process.env.GHL_LOCATION_ID,
       firstName: "Teste",
-      lastName: "Webhook", 
+      lastName: "Webhook",
       email: "teste@webhook.com",
       phone: "+5511999999999",
       tags: ["teste-webhook"]
@@ -16,41 +16,41 @@ export default async function handler(req, res) {
 
     console.log('📤 Enviando para GHL:', dadosContato);
 
-    // HEADERS CORRETOS PARA GHL
-    const response = await axios.post(
-      'https://services.leadconnectorhq.com/contacts/',
-      dadosContato,
-      {
-        headers: {
-          'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
-          'Content-Type': 'application/json',
-          'Accept': 'application/json'
-          // REMOVEMOS a versão que estava causando problema
-        },
-        timeout: 15000
-      }
-    );
-
-    console.log('✅ Sucesso GHL:', response.data);
-
-    return res.status(200).json({
-      sucesso: true,
-      mensagem: 'Contato criado no GoHighLevel!',
-      dados: response.data
+    // Usando fetch nativo
+    const response = await fetch('https://services.leadconnectorhq.com/contacts/', {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
+        'Version': '2021-07-28',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify(dadosContato)
     });
 
+    const responseData = await response.json();
+    
+    console.log('📨 Status GHL:', response.status);
+    console.log('📨 Resposta GHL:', responseData);
+
+    if (response.ok) {
+      return res.status(200).json({
+        sucesso: true,
+        mensagem: 'Contato criado no GoHighLevel!',
+        dados: responseData,
+        contato_id: responseData?.contact?.id
+      });
+    } else {
+      throw new Error(`GHL retornou erro: ${response.status} - ${JSON.stringify(responseData)}`);
+    }
+
   } catch (error) {
-    console.error('❌ Erro:', error.response?.data || error.message);
+    console.error('❌ Erro completo:', error);
     
     return res.status(500).json({
       erro: true,
       mensagem: error.message,
-      status: error.response?.status,
-      ghl_response: error.response?.data,
-      headers_enviados: {
-        authorization: `Bearer ${process.env.GHL_API_KEY?.substring(0, 20)}...`,
-        content_type: 'application/json'
-      }
+      api_key_exists: !!process.env.GHL_API_KEY,
+      location_id: process.env.GHL_LOCATION_ID?.substring(0, 8) + '...'
     });
   }
 }
