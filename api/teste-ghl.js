@@ -1,14 +1,14 @@
 export default async function handler(req, res) {
   try {
-    console.log('🧪 Testando conexão com GoHighLevel...');
-    console.log('API Key exists:', !!process.env.GHL_API_KEY);
-    console.log('Location ID:', process.env.GHL_LOCATION_ID);
+    const axios = require('axios');
     
-    // Dados para teste
+    console.log('🧪 Testando conexão com GoHighLevel...');
+    
+    // Dados do contato
     const dadosContato = {
       locationId: process.env.GHL_LOCATION_ID,
       firstName: "Teste",
-      lastName: "Webhook",
+      lastName: "Webhook", 
       email: "teste@webhook.com",
       phone: "+5511999999999",
       tags: ["teste-webhook"]
@@ -16,43 +16,41 @@ export default async function handler(req, res) {
 
     console.log('📤 Enviando para GHL:', dadosContato);
 
-    // Usar fetch em vez de axios
-    const response = await fetch('https://services.leadconnectorhq.com/contacts/', {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
-        'Version': '2021-07-28',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify(dadosContato)
-    });
+    // HEADERS CORRETOS PARA GHL
+    const response = await axios.post(
+      'https://services.leadconnectorhq.com/contacts/',
+      dadosContato,
+      {
+        headers: {
+          'Authorization': `Bearer ${process.env.GHL_API_KEY}`,
+          'Content-Type': 'application/json',
+          'Accept': 'application/json'
+          // REMOVEMOS a versão que estava causando problema
+        },
+        timeout: 15000
+      }
+    );
 
-    const responseText = await response.text();
-    console.log('📥 Response status:', response.status);
-    console.log('📥 Response text:', responseText);
-
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${responseText}`);
-    }
-
-    const data = JSON.parse(responseText);
-    console.log('✅ Sucesso GHL:', data);
+    console.log('✅ Sucesso GHL:', response.data);
 
     return res.status(200).json({
       sucesso: true,
       mensagem: 'Contato criado no GoHighLevel!',
-      dados: data,
-      contato_id: data?.contact?.id
+      dados: response.data
     });
 
   } catch (error) {
-    console.error('❌ Erro completo:', error);
+    console.error('❌ Erro:', error.response?.data || error.message);
     
     return res.status(500).json({
       erro: true,
       mensagem: error.message,
-      api_key_exists: !!process.env.GHL_API_KEY,
-      location_id: process.env.GHL_LOCATION_ID?.substring(0, 8) + '...'
+      status: error.response?.status,
+      ghl_response: error.response?.data,
+      headers_enviados: {
+        authorization: `Bearer ${process.env.GHL_API_KEY?.substring(0, 20)}...`,
+        content_type: 'application/json'
+      }
     });
   }
 }
