@@ -1,269 +1,416 @@
-// Substitua o conteúdo do seu arquivo webhook atual por este código
+// api/webhook-hotmart.js - Versão corrigida sem axios
 
 export default async function handler(req, res) {
-  // Permitir apenas POST
+  console.log('🔥 Webhook Hotmart iniciado:', new Date().toISOString());
+  
+  // CORS headers para desenvolvimento
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
+  if (req.method === 'OPTIONS') {
+    return res.status(200).end();
+  }
+
   if (req.method !== 'POST') {
     return res.status(405).json({ 
       erro: true, 
-      mensagem: 'Método não permitido' 
+      mensagem: 'Método não permitido - use POST' 
     });
   }
 
   try {
-    console.log('📨 Webhook recebido da Hotmart:', {
-      headers: req.headers,
-      body: req.body
-    });
+    // Log completo dos dados recebidos
+    console.log('📨 Headers recebidos:', JSON.stringify(req.headers, null, 2));
+    console.log('📨 Body recebido:', JSON.stringify(req.body, null, 2));
 
     const { event, data } = req.body;
 
-    // Validar estrutura básica
-    if (!event || !data) {
+    // Validação básica dos dados
+    if (!event) {
       return res.status(400).json({
         erro: true,
-        mensagem: 'Estrutura de dados inválida'
+        mensagem: 'Campo "event" ausente no webhook'
       });
     }
 
-    // Verificar se as env vars estão configuradas
-    if (!process.env.GHL_ACCESS_TOKEN) {
+    if (!data) {
+      return res.status(400).json({
+        erro: true,
+        mensagem: 'Campo "data" ausente no webhook'
+      });
+    }
+
+    // Verificar configurações
+    const token = process.env.GHL_ACCESS_TOKEN;
+    const locationId = process.env.GHL_LOCATION_ID;
+
+    console.log('🔧 Verificando configurações:', {
+      token_exists: !!token,
+      token_length: token ? token.length : 0,
+      location_id: locationId ? locationId.substring(0, 8) + '...' : 'missing'
+    });
+
+    if (!token) {
       console.error('❌ GHL_ACCESS_TOKEN não configurado');
       return res.status(500).json({
         erro: true,
-        mensagem: 'Token GHL não configurado',
-        api_key_exists: false
+        mensagem: 'Token GoHighLevel não configurado',
+        api_key_exists: false,
+        location_id: locationId || 'missing'
       });
     }
 
-    if (!process.env.GHL_LOCATION_ID) {
+    if (!locationId) {
       console.error('❌ GHL_LOCATION_ID não configurado');
       return res.status(500).json({
         erro: true,
-        mensagem: 'Location ID não configurado',
+        mensagem: 'Location ID GoHighLevel não configurado',
         api_key_exists: true,
         location_id: 'missing'
       });
     }
 
-    console.log('✅ Configurações OK:', {
-      api_key_exists: true,
-      location_id: process.env.GHL_LOCATION_ID.substring(0, 8) + '...'
-    });
+    console.log('✅ Configurações válidas, processando evento:', event);
 
+    // Processar diferentes tipos de eventos
     let resultado;
-
-    // Processar diferentes eventos
+    
     switch (event) {
       case 'PURCHASE_COMPLETE':
       case 'PURCHASE_APPROVED':
-        resultado = await processarCompra(data);
+        console.log('💰 Processando compra aprovada...');
+        resultado = await processarCompraHotmart(data, token, locationId);
         break;
       
       case 'PURCHASE_REFUNDED':
-        resultado = await processarReembolso(data);
+        console.log('💸 Processando reembolso...');
+        resultado = await processarReembolsoHotmart(data, token, locationId);
         break;
       
       case 'SUBSCRIPTION_CANCELLATION':
-        resultado = await processarCancelamento(data);
+        console.log('❌ Processando cancelamento...');
+        resultado = await processarCancelamentoHotmart(data, token, locationId);
         break;
       
       default:
         console.log('ℹ️ Evento não processado:', event);
         return res.status(200).json({
           erro: false,
-          mensagem: `Evento ${event} recebido mas não processado`
+          mensagem: `Evento ${event} recebido mas não processado`,
+          event_type: event,
+          api_key_exists: true,
+          location_id: locationId.substring(0, 8) + '...'
         });
     }
 
+    // Resposta de sucesso
     return res.status(200).json({
       erro: false,
-      mensagem: 'Processado com sucesso',
+      mensagem: 'Webhook processado com sucesso',
       evento: event,
-      resultado,
+      resultado: resultado,
+      timestamp: new Date().toISOString(),
       api_key_exists: true,
-      location_id: process.env.GHL_LOCATION_ID.substring(0, 8) + '...'
+      location_id: locationId.substring(0, 8) + '...'
     });
 
   } catch (error) {
-    console.error('❌ Erro no webhook:', error);
+    console.error('❌ ERRO no webhook:', error);
+    console.error('❌ Stack trace:', error.stack);
     
     return res.status(500).json({
       erro: true,
       mensagem: error.message,
+      error_type: error.name,
       api_key_exists: !!process.env.GHL_ACCESS_TOKEN,
       location_id: process.env.GHL_LOCATION_ID?.substring(0, 8) + '...' || 'missing',
+      timestamp: new Date().toISOString(),
       stack: process.env.NODE_ENV === 'development' ? error.stack : undefined
     });
   }
 }
 
-async function processarCompra(data) {
-  console.log('💰 Processando compra:', data);
-  
-  const buyer = data.buyer || data.subscriber;
-  const product = data.product;
-  
-  if (!buyer?.email) {
-    throw new Error('Email do comprador não encontrado');
-  }
+// === FUNÇÕES ESPECÍFICAS PARA HOTMART ===
 
-  // Criar contato no GoHighLevel
-  const contact = await criarContato({
-    firstName: buyer.name?.split(' ')[0] || 'Cliente',
-    lastName: buyer.name?.split(' ').slice(1).join(' ') || '',
-    email: buyer.email,
-    phone: buyer.phone || '',
-    locationId: process.env.GHL_LOCATION_ID,
-    customFields: {
-      produto_hotmart: product?.name || 'Produto Hotmart',
-      data_compra: new Date().toISOString(),
-      evento: 'compra_aprovada'
-    },
-    tags: ['cliente-hotmart', 'compra-aprovada']
+async function processarCompraHotmart(data, token, locationId) {
+  console.log('🛒 Iniciando processamento de compra Hotmart');
+  
+  // Extrair dados do comprador (Hotmart pode usar buyer ou subscriber)
+  const buyer = data.buyer || data.subscriber || {};
+  const product = data.product || {};
+  const purchase = data.purchase || data.commision || {};
+  
+  console.log('📋 Dados extraídos:', {
+    buyer_name: buyer.name,
+    buyer_email: buyer.email,
+    buyer_phone: buyer.phone,
+    product_name: product.name,
+    product_id: product.id,
+    transaction: purchase.transaction
   });
 
+  // Validação obrigatória
+  if (!buyer.email) {
+    throw new Error('Email do comprador não encontrado nos dados da Hotmart');
+  }
+
+  // Preparar dados do contato para GoHighLevel
+  const firstName = buyer.name ? buyer.name.trim().split(' ')[0] : 'Cliente';
+  const lastName = buyer.name ? buyer.name.trim().split(' ').slice(1).join(' ') : 'Hotmart';
+  
+  const contactData = {
+    firstName: firstName,
+    lastName: lastName,
+    email: buyer.email.toLowerCase().trim(),
+    phone: buyer.phone || buyer.checkout_phone || '',
+    locationId: locationId,
+    tags: ['cliente-hotmart', 'compra-aprovada'],
+    customFields: [
+      {
+        key: 'source',
+        field_value: 'Hotmart'
+      },
+      {
+        key: 'produto_hotmart',
+        field_value: product.name || 'Produto Hotmart'
+      },
+      {
+        key: 'produto_id',
+        field_value: product.id ? product.id.toString() : 'N/A'
+      },
+      {
+        key: 'data_compra',
+        field_value: new Date().toISOString()
+      },
+      {
+        key: 'transacao_hotmart',
+        field_value: purchase.transaction || 'N/A'
+      },
+      {
+        key: 'valor_compra',
+        field_value: purchase.price?.value ? purchase.price.value.toString() : '0'
+      }
+    ]
+  };
+
+  console.log('📤 Enviando para GoHighLevel:', contactData);
+
+  // Criar/atualizar contato no GoHighLevel
+  const contact = await criarOuAtualizarContatoGHL(contactData, token);
+  
+  console.log('✅ Compra processada - Contato ID:', contact.id);
+  
   return {
     acao: 'compra_processada',
     contato_id: contact.id,
     email: buyer.email,
-    produto: product?.name
+    nome: buyer.name,
+    produto: product.name || 'Produto Hotmart',
+    transacao: purchase.transaction
   };
 }
 
-async function processarReembolso(data) {
-  console.log('💸 Processando reembolso:', data);
+async function processarReembolsoHotmart(data, token, locationId) {
+  console.log('💸 Processando reembolso Hotmart');
   
-  const buyer = data.buyer || data.subscriber;
+  const buyer = data.buyer || data.subscriber || {};
   
-  if (!buyer?.email) {
-    throw new Error('Email do comprador não encontrado');
+  if (!buyer.email) {
+    throw new Error('Email do comprador não encontrado para reembolso');
   }
 
   // Buscar contato existente e adicionar tag de reembolso
-  const contact = await buscarOuCriarContato(buyer.email, {
-    firstName: buyer.name?.split(' ')[0] || 'Cliente',
-    lastName: buyer.name?.split(' ').slice(1).join(' ') || '',
-    tags: ['reembolso-hotmart']
-  });
+  const contact = await buscarOuCriarContatoSimples(
+    buyer.email, 
+    buyer.name || 'Cliente Reembolso',
+    token, 
+    locationId,
+    ['reembolso-hotmart', 'cliente-inativo']
+  );
 
   return {
     acao: 'reembolso_processado',
     contato_id: contact.id,
-    email: buyer.email
+    email: buyer.email,
+    nome: buyer.name
   };
 }
 
-async function processarCancelamento(data) {
-  console.log('❌ Processando cancelamento:', data);
+async function processarCancelamentoHotmart(data, token, locationId) {
+  console.log('❌ Processando cancelamento Hotmart');
   
-  const subscriber = data.subscriber || data.buyer;
+  const subscriber = data.subscriber || data.buyer || {};
   
-  if (!subscriber?.email) {
-    throw new Error('Email do assinante não encontrado');
+  if (!subscriber.email) {
+    throw new Error('Email não encontrado para cancelamento de assinatura');
   }
 
-  const contact = await buscarOuCriarContato(subscriber.email, {
-    firstName: subscriber.name?.split(' ')[0] || 'Cliente',
-    lastName: subscriber.name?.split(' ').slice(1).join(' ') || '',
-    tags: ['cancelamento-hotmart']
-  });
+  const contact = await buscarOuCriarContatoSimples(
+    subscriber.email,
+    subscriber.name || 'Assinante Cancelado',
+    token,
+    locationId,
+    ['cancelamento-hotmart', 'assinatura-cancelada']
+  );
 
   return {
     acao: 'cancelamento_processado',
     contato_id: contact.id,
-    email: subscriber.email
+    email: subscriber.email,
+    nome: subscriber.name
   };
 }
 
-// FUNÇÕES DO GOHIGHLEVEL (usando fetch nativo)
+// === FUNÇÕES DA API GOHIGHLEVEL (SEM AXIOS) ===
 
-async function criarContato(dadosContato) {
-  console.log('👤 Criando contato:', dadosContato.email);
+async function criarOuAtualizarContatoGHL(contactData, token) {
+  console.log('🔄 Criando/atualizando contato no GoHighLevel...');
   
+  // Primeiro, tentar buscar contato existente
+  try {
+    const contatoExistente = await buscarContatoPorEmail(contactData.email, contactData.locationId, token);
+    
+    if (contatoExistente) {
+      console.log('🔄 Atualizando contato existente:', contatoExistente.id);
+      return await atualizarContatoGHL(contatoExistente.id, contactData, token);
+    }
+  } catch (error) {
+    console.log('⚠️ Erro ao buscar contato existente, criando novo:', error.message);
+  }
+
+  // Se não encontrou ou deu erro, criar novo
+  console.log('➕ Criando novo contato...');
+  return await criarNovoContatoGHL(contactData, token);
+}
+
+async function criarNovoContatoGHL(contactData, token) {
   const url = 'https://services.leadconnectorhq.com/contacts/';
+  
+  console.log('📤 POST para:', url);
+  console.log('📤 Dados:', JSON.stringify(contactData, null, 2));
   
   const response = await fetch(url, {
     method: 'POST',
     headers: {
-      'Authorization': `Bearer ${process.env.GHL_ACCESS_TOKEN}`,
+      'Authorization': `Bearer ${token}`,
       'Version': '2021-07-28',
-      'Content-Type': 'application/json'
+      'Content-Type': 'application/json',
+      'Accept': 'application/json'
     },
-    body: JSON.stringify(dadosContato)
+    body: JSON.stringify(contactData)
   });
+
+  console.log('📡 Status da resposta:', response.status);
+  console.log('📡 Headers da resposta:', Object.fromEntries(response.headers.entries()));
 
   if (!response.ok) {
     const errorText = await response.text();
-    console.error('Erro ao criar contato:', errorText);
+    console.error('❌ Erro na resposta GHL:', errorText);
     throw new Error(`GHL retornou erro: ${response.status} - ${errorText}`);
   }
 
   const result = await response.json();
-  console.log('✅ Contato criado:', result.contact?.id);
+  console.log('✅ Contato criado:', result);
   
   return result.contact || result;
 }
 
-async function buscarOuCriarContato(email, dadosBackup) {
-  console.log('🔍 Buscando contato:', email);
+async function atualizarContatoGHL(contactId, contactData, token) {
+  const url = `https://services.leadconnectorhq.com/contacts/${contactId}`;
   
-  try {
-    // Buscar contato existente
-    const searchUrl = 'https://services.leadconnectorhq.com/contacts/search/duplicate';
-    
-    const searchResponse = await fetch(searchUrl, {
-      method: 'POST',
-      headers: {
-        'Authorization': `Bearer ${process.env.GHL_ACCESS_TOKEN}`,
-        'Version': '2021-07-28',
-        'Content-Type': 'application/json'
-      },
-      body: JSON.stringify({
-        email: email,
-        locationId: process.env.GHL_LOCATION_ID
-      })
-    });
+  console.log('📤 PUT para:', url);
+  
+  const response = await fetch(url, {
+    method: 'PUT',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Version': '2021-07-28',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(contactData)
+  });
 
-    if (searchResponse.ok) {
-      const searchResult = await searchResponse.json();
-      
-      if (searchResult.contacts && searchResult.contacts.length > 0) {
-        console.log('✅ Contato existente encontrado');
-        const contact = searchResult.contacts[0];
-        
-        // Adicionar tags se fornecidas
-        if (dadosBackup.tags) {
-          await adicionarTags(contact.id, dadosBackup.tags);
-        }
-        
-        return contact;
+  if (!response.ok) {
+    const errorText = await response.text();
+    console.error('❌ Erro ao atualizar contato:', errorText);
+    throw new Error(`Erro ao atualizar contato: ${response.status} - ${errorText}`);
+  }
+
+  const result = await response.json();
+  console.log('✅ Contato atualizado:', result);
+  
+  return result.contact || result;
+}
+
+async function buscarContatoPorEmail(email, locationId, token) {
+  const url = 'https://services.leadconnectorhq.com/contacts/search/duplicate';
+  
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`,
+      'Version': '2021-07-28',
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      email: email,
+      locationId: locationId
+    })
+  });
+
+  if (!response.ok) {
+    throw new Error(`Erro na busca: ${response.status}`);
+  }
+
+  const result = await response.json();
+  
+  if (result.contacts && result.contacts.length > 0) {
+    console.log('✅ Contato existente encontrado:', result.contacts[0].id);
+    return result.contacts[0];
+  }
+  
+  return null;
+}
+
+async function buscarOuCriarContatoSimples(email, nome, token, locationId, tags = []) {
+  try {
+    // Buscar existente
+    const existing = await buscarContatoPorEmail(email, locationId, token);
+    
+    if (existing) {
+      // Adicionar novas tags
+      if (tags.length > 0) {
+        await adicionarTagsContato(existing.id, tags, token);
       }
+      return existing;
     }
 
-    // Se não encontrou, criar novo contato
-    console.log('➕ Criando novo contato');
-    return await criarContato({
-      ...dadosBackup,
+    // Criar novo
+    const contactData = {
+      firstName: nome.split(' ')[0] || 'Cliente',
+      lastName: nome.split(' ').slice(1).join(' ') || 'Hotmart',
       email: email,
-      locationId: process.env.GHL_LOCATION_ID
-    });
+      locationId: locationId,
+      tags: tags
+    };
 
+    return await criarNovoContatoGHL(contactData, token);
+    
   } catch (error) {
-    console.error('Erro ao buscar/criar contato:', error);
+    console.error('Erro ao buscar/criar contato simples:', error);
     throw error;
   }
 }
 
-async function adicionarTags(contactId, tags) {
-  console.log('🏷️ Adicionando tags:', tags);
-  
+async function adicionarTagsContato(contactId, tags, token) {
   const url = `https://services.leadconnectorhq.com/contacts/${contactId}/tags`;
   
   try {
     const response = await fetch(url, {
       method: 'POST',
       headers: {
-        'Authorization': `Bearer ${process.env.GHL_ACCESS_TOKEN}`,
+        'Authorization': `Bearer ${token}`,
         'Version': '2021-07-28',
         'Content-Type': 'application/json'
       },
@@ -271,7 +418,7 @@ async function adicionarTags(contactId, tags) {
     });
 
     if (response.ok) {
-      console.log('✅ Tags adicionadas com sucesso');
+      console.log('✅ Tags adicionadas:', tags);
     } else {
       console.log('⚠️ Erro ao adicionar tags:', response.status);
     }
